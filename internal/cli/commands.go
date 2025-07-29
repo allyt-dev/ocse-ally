@@ -22,7 +22,7 @@ func Execute() error {
 	command := os.Args[1]
 	switch command {
 	case "list":
-		return runList()
+		return runList(os.Args[2:])
 	case "export":
 		return runExport()
 	case "help", "-h", "--help":
@@ -42,9 +42,12 @@ USAGE:
     opencode-session-export <command> [options]
 
 COMMANDS:
-    list                    List all available sessions
+    list [--all]            List available sessions (--all for all projects)
     export                  Export session(s) to markdown
     help                    Show this help message
+
+LIST OPTIONS:
+    --all                   List sessions from all projects, not just current repo
 
 EXPORT OPTIONS:
     --session <id>          Export specific session by ID
@@ -66,7 +69,17 @@ EXAMPLES:
     opencode-session-export export --since 2024-01-01 --include-costs --output-dir ./exports/`)
 }
 
-func runList() error {
+func runList(args []string) error {
+	// Parse list flags
+	listFlags := flag.NewFlagSet("list", flag.ExitOnError)
+	all := listFlags.Bool("all", false, "List sessions from all projects")
+	listFlags.Parse(args)
+
+	if *all {
+		return runListAll()
+	}
+
+	// Default behavior: list sessions from current project only
 	projectPath, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
@@ -83,11 +96,11 @@ func runList() error {
 	}
 
 	if len(sessionIDs) == 0 {
-		fmt.Println("No sessions found.")
+		fmt.Println("No sessions found in current project.")
 		return nil
 	}
 
-	fmt.Printf("Found %d session(s):\n\n", len(sessionIDs))
+	fmt.Printf("Found %d session(s) in current project:\n\n", len(sessionIDs))
 
 	// Get session info for each session
 	for _, sessionID := range sessionIDs {
@@ -101,6 +114,45 @@ func runList() error {
 			sessionID[:8],
 			info.Title,
 			info.GetCreatedAt().Format("2006-01-02 15:04"))
+	}
+
+	return nil
+}
+
+func runListAll() error {
+	reader, err := session.NewGlobalReader()
+	if err != nil {
+		return fmt.Errorf("failed to create global session reader: %w", err)
+	}
+
+	allSessions, err := reader.ListAllSessions()
+	if err != nil {
+		return fmt.Errorf("failed to list all sessions: %w", err)
+	}
+
+	if len(allSessions) == 0 {
+		fmt.Println("No sessions found across all projects.")
+		return nil
+	}
+
+	fmt.Printf("Found %d session(s) across all projects:\n\n", len(allSessions))
+
+	// Group sessions by project
+	projectSessions := make(map[string][]session.SessionWithProject)
+	for _, sess := range allSessions {
+		projectSessions[sess.ProjectName] = append(projectSessions[sess.ProjectName], sess)
+	}
+
+	// Display sessions grouped by project
+	for projectName, sessions := range projectSessions {
+		fmt.Printf("Project: %s\n", projectName)
+		for _, sess := range sessions {
+			fmt.Printf("  %s - %s (%s)\n",
+				sess.SessionID[:8],
+				sess.Info.Title,
+				sess.Info.GetCreatedAt().Format("2006-01-02 15:04"))
+		}
+		fmt.Println()
 	}
 
 	return nil

@@ -16,6 +16,13 @@ type Reader struct {
 	storageDir string
 }
 
+// SessionWithProject represents a session with its associated project information
+type SessionWithProject struct {
+	SessionID   string
+	ProjectName string
+	Info        SessionInfo
+}
+
 // NewReader creates a new session reader
 func NewReader(projectPath string) (*Reader, error) {
 	storageDir, err := config.GetStorageDir(projectPath)
@@ -25,6 +32,13 @@ func NewReader(projectPath string) (*Reader, error) {
 
 	return &Reader{
 		storageDir: storageDir,
+	}, nil
+}
+
+// NewGlobalReader creates a new session reader for accessing all projects
+func NewGlobalReader() (*Reader, error) {
+	return &Reader{
+		storageDir: "", // Will be set dynamically for each project
 	}, nil
 }
 
@@ -52,6 +66,65 @@ func (r *Reader) ListSessions() ([]string, error) {
 	}
 
 	return sessionIDs, nil
+}
+
+// ListAllSessions returns all sessions from all projects
+func (r *Reader) ListAllSessions() ([]SessionWithProject, error) {
+	dataDir, err := config.GetOpencodeDataDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get opencode data directory: %w", err)
+	}
+
+	projectsDir := filepath.Join(dataDir, "project")
+
+	// Check if projects directory exists
+	if _, err := os.Stat(projectsDir); os.IsNotExist(err) {
+		return []SessionWithProject{}, nil
+	}
+
+	entries, err := os.ReadDir(projectsDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read projects directory: %w", err)
+	}
+
+	var allSessions []SessionWithProject
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		projectName := entry.Name()
+		storageDir := filepath.Join(projectsDir, projectName, "storage")
+
+		// Create a temporary reader for this project
+		projectReader := &Reader{storageDir: storageDir}
+
+		sessionIDs, err := projectReader.ListSessions()
+		if err != nil {
+			continue // Skip projects with errors
+		}
+
+		for _, sessionID := range sessionIDs {
+			info, err := projectReader.ReadSessionInfo(sessionID)
+			if err != nil {
+				continue // Skip sessions with errors
+			}
+
+			allSessions = append(allSessions, SessionWithProject{
+				SessionID:   sessionID,
+				ProjectName: projectName,
+				Info:        *info,
+			})
+		}
+	}
+
+	// Sort sessions by creation time (newest first)
+	sort.Slice(allSessions, func(i, j int) bool {
+		return allSessions[i].Info.GetCreatedAt().After(allSessions[j].Info.GetCreatedAt())
+	})
+
+	return allSessions, nil
 }
 
 // ReadSessionInfo reads session metadata
