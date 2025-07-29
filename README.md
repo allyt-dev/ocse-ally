@@ -1,4 +1,4 @@
-# ocse
+# ocse - opencode sessions exporter
 
 Export your opencode sessions to clean, readable markdown files. Works on macOS, Linux, and Windows with no dependencies.
 
