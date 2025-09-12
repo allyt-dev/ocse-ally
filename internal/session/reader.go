@@ -13,7 +13,8 @@ import (
 
 // Reader handles reading session data from the filesystem
 type Reader struct {
-	storageDir string
+	storageDir  string
+	projectPath string // For filtering sessions in new format
 }
 
 // SessionWithProject represents a session with its associated project information
@@ -25,13 +26,29 @@ type SessionWithProject struct {
 
 // NewReader creates a new session reader
 func NewReader(projectPath string) (*Reader, error) {
+	// First try the old format (project-based storage)
 	storageDir, err := config.GetStorageDir(projectPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get storage directory: %w", err)
 	}
 
+	// Check if old format exists
+	if _, err := os.Stat(filepath.Join(storageDir, "session")); err == nil {
+		return &Reader{
+			storageDir: storageDir,
+		}, nil
+	}
+
+	// Try new format (hash-based storage in main storage directory)
+	dataDir, err := config.GetOpencodeDataDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get opencode data directory: %w", err)
+	}
+
+	mainStorageDir := filepath.Join(dataDir, "storage")
 	return &Reader{
-		storageDir: storageDir,
+		storageDir:  mainStorageDir,
+		projectPath: projectPath,
 	}, nil
 }
 
@@ -44,6 +61,12 @@ func NewGlobalReader() (*Reader, error) {
 
 // ListSessions returns all available session IDs
 func (r *Reader) ListSessions() ([]string, error) {
+	// Check if this is the new format (hash-based storage)
+	if r.projectPath != "" {
+		return r.listSessionsNewFormat()
+	}
+
+	// Old format (project-based storage)
 	sessionInfoDir := filepath.Join(r.storageDir, "session", "info")
 
 	entries, err := os.ReadDir(sessionInfoDir)
@@ -62,6 +85,65 @@ func (r *Reader) ListSessions() ([]string, error) {
 		if strings.HasSuffix(entry.Name(), ".json") {
 			sessionID := strings.TrimSuffix(entry.Name(), ".json")
 			sessionIDs = append(sessionIDs, sessionID)
+		}
+	}
+
+	return sessionIDs, nil
+}
+
+// listSessionsNewFormat lists sessions in the new hash-based format
+func (r *Reader) listSessionsNewFormat() ([]string, error) {
+	sessionDir := filepath.Join(r.storageDir, "session")
+
+	// Read all project directories (hashes)
+	projectDirs, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("failed to read session directory: %w", err)
+	}
+
+	absProjectPath, _ := filepath.Abs(r.projectPath)
+
+	var sessionIDs []string
+	for _, projectDir := range projectDirs {
+		if !projectDir.IsDir() {
+			continue
+		}
+
+		// Read session files in this project directory
+		projectSessionDir := filepath.Join(sessionDir, projectDir.Name())
+		sessionFiles, err := os.ReadDir(projectSessionDir)
+		if err != nil {
+			continue
+		}
+
+		// Check each session file to see if it belongs to our project
+		for _, sessionFile := range sessionFiles {
+			if !strings.HasSuffix(sessionFile.Name(), ".json") {
+				continue
+			}
+
+			// Read the session metadata to check the directory
+			sessionPath := filepath.Join(projectSessionDir, sessionFile.Name())
+			data, err := os.ReadFile(sessionPath)
+			if err != nil {
+				continue
+			}
+
+			var sessionMeta struct {
+				ID        string `json:"id"`
+				Directory string `json:"directory"`
+			}
+			if err := json.Unmarshal(data, &sessionMeta); err != nil {
+				continue
+			}
+
+			// Check if this session belongs to our project
+			if sessionMeta.Directory == absProjectPath {
+				sessionIDs = append(sessionIDs, sessionMeta.ID)
+			}
 		}
 	}
 
@@ -119,9 +201,9 @@ func (r *Reader) ListAllSessions() ([]SessionWithProject, error) {
 		}
 	}
 
-	// Sort sessions by creation time (newest first)
+	// Sort sessions by update time (most recently active first)
 	sort.Slice(allSessions, func(i, j int) bool {
-		return allSessions[i].Info.GetCreatedAt().After(allSessions[j].Info.GetCreatedAt())
+		return allSessions[i].Info.GetUpdatedAt().After(allSessions[j].Info.GetUpdatedAt())
 	})
 
 	return allSessions, nil
@@ -129,7 +211,19 @@ func (r *Reader) ListAllSessions() ([]SessionWithProject, error) {
 
 // ReadSessionInfo reads session metadata
 func (r *Reader) ReadSessionInfo(sessionID string) (*SessionInfo, error) {
-	infoPath := filepath.Join(r.storageDir, "session", "info", sessionID+".json")
+	var infoPath string
+
+	if r.projectPath != "" {
+		// New format: find the session file
+		sessionPath, err := r.findSessionFile(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		infoPath = sessionPath
+	} else {
+		// Old format
+		infoPath = filepath.Join(r.storageDir, "session", "info", sessionID+".json")
+	}
 
 	data, err := os.ReadFile(infoPath)
 	if err != nil {
@@ -144,9 +238,42 @@ func (r *Reader) ReadSessionInfo(sessionID string) (*SessionInfo, error) {
 	return &info, nil
 }
 
+// findSessionFile finds a session file in the new format
+func (r *Reader) findSessionFile(sessionID string) (string, error) {
+	sessionDir := filepath.Join(r.storageDir, "session")
+
+	// Search through all project directories
+	projectDirs, err := os.ReadDir(sessionDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read session directory: %w", err)
+	}
+
+	for _, projectDir := range projectDirs {
+		if !projectDir.IsDir() {
+			continue
+		}
+
+		// Look for the session file
+		sessionPath := filepath.Join(sessionDir, projectDir.Name(), sessionID+".json")
+		if _, err := os.Stat(sessionPath); err == nil {
+			return sessionPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("session %s not found", sessionID)
+}
+
 // ReadMessages reads all messages for a session
 func (r *Reader) ReadMessages(sessionID string) ([]Message, error) {
-	messageDir := filepath.Join(r.storageDir, "session", "message", sessionID)
+	var messageDir string
+
+	if r.projectPath != "" {
+		// New format: messages are in session-specific subdirectory
+		messageDir = filepath.Join(r.storageDir, "message", sessionID)
+	} else {
+		// Old format
+		messageDir = filepath.Join(r.storageDir, "session", "message", sessionID)
+	}
 
 	entries, err := os.ReadDir(messageDir)
 	if err != nil {
@@ -187,7 +314,15 @@ func (r *Reader) ReadMessages(sessionID string) ([]Message, error) {
 
 // ReadMessageParts reads all parts for a specific message
 func (r *Reader) ReadMessageParts(sessionID, messageID string) ([]MessagePart, error) {
-	partDir := filepath.Join(r.storageDir, "session", "part", sessionID, messageID)
+	var partDir string
+
+	if r.projectPath != "" {
+		// New format: parts are in top-level part directory under messageID
+		partDir = filepath.Join(r.storageDir, "part", messageID)
+	} else {
+		// Old format
+		partDir = filepath.Join(r.storageDir, "session", "part", sessionID, messageID)
+	}
 
 	entries, err := os.ReadDir(partDir)
 	if err != nil {

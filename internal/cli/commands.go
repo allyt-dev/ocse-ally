@@ -47,7 +47,8 @@ COMMANDS:
     help                    Show this help message
 
 LIST OPTIONS:
-    --all                   List sessions from all projects, not just current repo
+    --all                   List sessions from all projects (grouped by project)
+    --recent                List all sessions chronologically by last update
 
 EXPORT OPTIONS:
     --session <id>          Export specific session by ID
@@ -73,10 +74,11 @@ func runList(args []string) error {
 	// Parse list flags
 	listFlags := flag.NewFlagSet("list", flag.ExitOnError)
 	all := listFlags.Bool("all", false, "List sessions from all projects")
+	recent := listFlags.Bool("recent", false, "List sessions chronologically by last update")
 	listFlags.Parse(args)
 
-	if *all {
-		return runListAll()
+	if *all || *recent {
+		return runListAll(*recent)
 	}
 
 	// Default behavior: list sessions from current project only
@@ -113,13 +115,13 @@ func runList(args []string) error {
 		fmt.Printf("  %s - %s (%s)\n",
 			sessionID[:8],
 			info.Title,
-			info.GetCreatedAt().Format("2006-01-02 15:04"))
+			info.GetUpdatedAt().Format("2006-01-02 15:04"))
 	}
 
 	return nil
 }
 
-func runListAll() error {
+func runListAll(chronological bool) error {
 	reader, err := session.NewGlobalReader()
 	if err != nil {
 		return fmt.Errorf("failed to create global session reader: %w", err)
@@ -137,22 +139,33 @@ func runListAll() error {
 
 	fmt.Printf("Found %d session(s) across all projects:\n\n", len(allSessions))
 
-	// Group sessions by project
-	projectSessions := make(map[string][]session.SessionWithProject)
-	for _, sess := range allSessions {
-		projectSessions[sess.ProjectName] = append(projectSessions[sess.ProjectName], sess)
-	}
-
-	// Display sessions grouped by project
-	for projectName, sessions := range projectSessions {
-		fmt.Printf("Project: %s\n", projectName)
-		for _, sess := range sessions {
-			fmt.Printf("  %s - %s (%s)\n",
+	if chronological {
+		// Display sessions chronologically
+		for _, sess := range allSessions {
+			fmt.Printf("  %s - [%s] %s (%s)\n",
 				sess.SessionID[:8],
+				sess.ProjectName,
 				sess.Info.Title,
-				sess.Info.GetCreatedAt().Format("2006-01-02 15:04"))
+				sess.Info.GetUpdatedAt().Format("2006-01-02 15:04"))
 		}
-		fmt.Println()
+	} else {
+		// Group sessions by project
+		projectSessions := make(map[string][]session.SessionWithProject)
+		for _, sess := range allSessions {
+			projectSessions[sess.ProjectName] = append(projectSessions[sess.ProjectName], sess)
+		}
+
+		// Display sessions grouped by project
+		for projectName, sessions := range projectSessions {
+			fmt.Printf("Project: %s\n", projectName)
+			for _, sess := range sessions {
+				fmt.Printf("  %s - %s (%s)\n",
+					sess.SessionID[:8],
+					sess.Info.Title,
+					sess.Info.GetUpdatedAt().Format("2006-01-02 15:04"))
+			}
+			fmt.Println()
+		}
 	}
 
 	return nil
@@ -210,7 +223,7 @@ func runExport() error {
 			return fmt.Errorf("no sessions found")
 		}
 
-		// Find the latest session by reading creation times
+		// Find the latest session by reading update times
 		var latestSession string
 		var latestTime time.Time
 
@@ -219,8 +232,8 @@ func runExport() error {
 			if err != nil {
 				continue
 			}
-			if info.GetCreatedAt().After(latestTime) {
-				latestTime = info.GetCreatedAt()
+			if info.GetUpdatedAt().After(latestTime) {
+				latestTime = info.GetUpdatedAt()
 				latestSession = sid
 			}
 		}

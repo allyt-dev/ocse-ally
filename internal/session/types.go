@@ -23,12 +23,12 @@ type TimeInfo struct {
 
 // GetCreatedAt returns the creation time as a time.Time
 func (s *SessionInfo) GetCreatedAt() time.Time {
-	return time.Unix(0, s.Time.Created*int64(time.Millisecond))
+	return time.UnixMilli(s.Time.Created)
 }
 
 // GetUpdatedAt returns the update time as a time.Time
 func (s *SessionInfo) GetUpdatedAt() time.Time {
-	return time.Unix(0, s.Time.Updated*int64(time.Millisecond))
+	return time.UnixMilli(s.Time.Updated)
 }
 
 // Message represents a message in the session
@@ -52,7 +52,7 @@ func (m *Message) GetCreatedAt() time.Time {
 	if m.Time == nil {
 		return time.Time{}
 	}
-	return time.Unix(0, m.Time.Created*int64(time.Millisecond))
+	return time.UnixMilli(m.Time.Created)
 }
 
 // MessagePart represents a part of a message
@@ -74,7 +74,7 @@ func (p *MessagePart) GetCreatedAt() time.Time {
 	if p.Time == nil {
 		return time.Time{}
 	}
-	return time.Unix(0, p.Time.Start*int64(time.Millisecond))
+	return time.UnixMilli(p.Time.Start)
 }
 
 // TextPartData represents text content

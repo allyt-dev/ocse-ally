@@ -207,8 +207,8 @@ func (g *Generator) writeToolPartDirect(md *strings.Builder, part session.Messag
 	md.WriteString(fmt.Sprintf("**Status:** %s %s", statusIcon, strings.Title(state.Status)))
 
 	if g.includeTimings && state.Time != nil {
-		start := time.Unix(0, state.Time.Start*int64(time.Millisecond))
-		end := time.Unix(0, state.Time.End*int64(time.Millisecond))
+		start := time.UnixMilli(state.Time.Start)
+		end := time.UnixMilli(state.Time.End)
 		duration := end.Sub(start)
 		md.WriteString(fmt.Sprintf(" | **Duration:** %s", g.formatDuration(duration)))
 	}
@@ -259,8 +259,8 @@ func (g *Generator) writeToolPartFromData(md *strings.Builder, toolData session.
 	md.WriteString(fmt.Sprintf("**Status:** %s %s", statusIcon, strings.Title(toolData.State.Status)))
 
 	if g.includeTimings && toolData.State.Time != nil {
-		start := time.Unix(0, toolData.State.Time.Start*int64(time.Millisecond))
-		end := time.Unix(0, toolData.State.Time.End*int64(time.Millisecond))
+		start := time.UnixMilli(toolData.State.Time.Start)
+		end := time.UnixMilli(toolData.State.Time.End)
 		duration := end.Sub(start)
 		md.WriteString(fmt.Sprintf(" | **Duration:** %s", g.formatDuration(duration)))
 	}
