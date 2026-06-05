@@ -59,7 +59,7 @@ EXPORT OPTIONS:
     --project <path>        Project path (default: current directory)
     --include-costs         Include cost information in output
     --include-timings       Include timing information in output
-    --include-snapshots     Include snapshot information in output
+    --include-system-events Include system event timeline (model/agent switches)
     --since <date>          Export sessions since date (YYYY-MM-DD)
 
 EXAMPLES:
@@ -183,7 +183,7 @@ func runExport() error {
 	projectPath := exportFlags.String("project", "", "Project path (default: current directory)")
 	includeCosts := exportFlags.Bool("include-costs", false, "Include cost information")
 	includeTimings := exportFlags.Bool("include-timings", false, "Include timing information")
-	includeSnapshots := exportFlags.Bool("include-snapshots", false, "Include snapshot information")
+	includeSystemEvents := exportFlags.Bool("include-system-events", true, "Include system event timeline")
 	since := exportFlags.String("since", "", "Export sessions since date (YYYY-MM-DD)")
 
 	exportFlags.Parse(os.Args[2:])
@@ -204,9 +204,9 @@ func runExport() error {
 
 	// Create markdown generator
 	generator := markdown.NewGenerator(markdown.Options{
-		IncludeCosts:     *includeCosts,
-		IncludeTimings:   *includeTimings,
-		IncludeSnapshots: *includeSnapshots,
+		IncludeCosts:        *includeCosts,
+		IncludeTimings:      *includeTimings,
+		IncludeSystemEvents: *includeSystemEvents,
 	})
 
 	// Determine which sessions to export

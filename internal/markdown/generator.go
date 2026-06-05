@@ -11,24 +11,27 @@ import (
 
 // Generator handles markdown generation from session data
 type Generator struct {
-	includeCosts     bool
-	includeTimings   bool
-	includeSnapshots bool
+	includeCosts        bool
+	includeTimings      bool
+	includeSnapshots    bool
+	includeSystemEvents bool
 }
 
 // Options configures the markdown generator
 type Options struct {
-	IncludeCosts     bool
-	IncludeTimings   bool
-	IncludeSnapshots bool
+	IncludeCosts        bool
+	IncludeTimings      bool
+	IncludeSnapshots    bool
+	IncludeSystemEvents bool
 }
 
 // NewGenerator creates a new markdown generator
 func NewGenerator(opts Options) *Generator {
 	return &Generator{
-		includeCosts:     opts.IncludeCosts,
-		includeTimings:   opts.IncludeTimings,
-		includeSnapshots: opts.IncludeSnapshots,
+		includeCosts:        opts.IncludeCosts,
+		includeTimings:      opts.IncludeTimings,
+		includeSnapshots:    opts.IncludeSnapshots,
+		includeSystemEvents: opts.IncludeSystemEvents,
 	}
 }
 
@@ -36,15 +39,17 @@ func NewGenerator(opts Options) *Generator {
 func (g *Generator) Generate(sess *session.Session) (string, error) {
 	var md strings.Builder
 
-	// Session header
 	g.writeSessionHeader(&md, &sess.Info)
 
-	// Group parts by message
 	partsByMessage := g.groupPartsByMessage(sess.Parts)
 
-	// Process messages in order
-	for i, message := range sess.Messages {
-		g.writeMessage(&md, &message, partsByMessage[message.ID], i+1)
+	for i := range sess.Messages {
+		msg := &sess.Messages[i]
+		g.writeMessage(&md, msg, partsByMessage[msg.ID], i+1)
+	}
+
+	if g.includeSystemEvents && len(sess.SystemEvents) > 0 {
+		g.writeSystemEvents(&md, sess.SystemEvents)
 	}
 
 	return md.String(), nil
@@ -66,67 +71,127 @@ func (g *Generator) writeSessionHeader(md *strings.Builder, info *session.Sessio
 		md.WriteString(fmt.Sprintf("**Share URL:** %s  \n", *info.ShareURL))
 	}
 
+	// Agent
+	if info.Agent != "" {
+		md.WriteString(fmt.Sprintf("**Agent:** %s  \n", info.Agent))
+	}
+
+	// Model info
+	model := info.Model
+	if model.ProviderID != "" || model.ModelID != "" {
+		md.WriteString(fmt.Sprintf("**Model:** %s/%s", model.ProviderID, model.ModelID))
+		if model.Variant != "" {
+			md.WriteString(fmt.Sprintf(" (%s)", model.Variant))
+		}
+		md.WriteString("  \n")
+	}
+
+	// Cost
+	if g.includeCosts && info.Cost > 0 {
+		md.WriteString(fmt.Sprintf("**Cost:** $%.4f  \n", info.Cost))
+	}
+
+	// Token breakdown
+	tokens := session.TokenInfo{
+		Total:      info.TokensInput + info.TokensOutput + info.TokensReasoning + info.TokensCacheRead + info.TokensCacheWrite,
+		Input:      info.TokensInput,
+		Output:     info.TokensOutput,
+		Reasoning:  info.TokensReasoning,
+		CacheRead:  info.TokensCacheRead,
+		CacheWrite: info.TokensCacheWrite,
+	}
+	g.writeTokenSummary(md, tokens, "  \n")
+
 	md.WriteString("\n---\n\n")
 }
 
-func (g *Generator) writeMessage(md *strings.Builder, msg *session.Message, parts []session.MessagePart, messageNum int) {
-	// Message header
-	role := strings.Title(msg.Role)
+func (g *Generator) writeTokenSummary(md *strings.Builder, tokens session.TokenInfo, suffix string) {
+	if tokens.Total == 0 {
+		return
+	}
+	md.WriteString(fmt.Sprintf("**Tokens:** %s", g.formatTokens(tokens)))
+	md.WriteString(suffix)
+}
+
+func (g *Generator) formatTokens(tokens session.TokenInfo) string {
+	var parts []string
+	if tokens.Input > 0 {
+		parts = append(parts, fmt.Sprintf("%d in", tokens.Input))
+	}
+	if tokens.Output > 0 {
+		parts = append(parts, fmt.Sprintf("%d out", tokens.Output))
+	}
+	if tokens.Reasoning > 0 {
+		parts = append(parts, fmt.Sprintf("%d reasoning", tokens.Reasoning))
+	}
+	if tokens.CacheRead > 0 {
+		parts = append(parts, fmt.Sprintf("%d cache-read", tokens.CacheRead))
+	}
+	if tokens.CacheWrite > 0 {
+		parts = append(parts, fmt.Sprintf("%d cache-write", tokens.CacheWrite))
+	}
+	return fmt.Sprintf("total %d (%s)", tokens.Total, strings.Join(parts, ", "))
+}
+
+func (g *Generator) writeMessage(md *strings.Builder, msg *session.Message, parts []*session.MessagePart, messageNum int) {
+	role := strings.Title(msg.Role())
 	md.WriteString(fmt.Sprintf("## Message %d: %s\n", messageNum, role))
 
-	// Timestamp
 	md.WriteString(fmt.Sprintf("**Timestamp:** %s", msg.GetCreatedAt().Format("15:04:05")))
 
-	// Assistant metadata
-	if msg.Role == "assistant" {
-		if msg.Model != nil {
-			md.WriteString(fmt.Sprintf(" | **Model:** %s", *msg.Model))
+	if msg.Role() == "assistant" {
+		modelID := msg.ModelID()
+		if modelID != "" {
+			md.WriteString(fmt.Sprintf(" | **Model:** %s", modelID))
 		}
-		if g.includeCosts && msg.Cost != nil {
-			md.WriteString(fmt.Sprintf(" | **Cost:** $%.4f", *msg.Cost))
+		if g.includeCosts {
+			cost := msg.Cost()
+			if cost > 0 {
+				md.WriteString(fmt.Sprintf(" | **Cost:** $%.4f", cost))
+			}
 		}
-		if msg.InputTokens != nil && msg.OutputTokens != nil {
-			md.WriteString(fmt.Sprintf(" | **Tokens:** %d in, %d out", *msg.InputTokens, *msg.OutputTokens))
+		tokens := msg.Tokens()
+		if tokens.Total > 0 || tokens.Input > 0 || tokens.Output > 0 {
+			md.WriteString(fmt.Sprintf(" | **Tokens:** %s", g.formatTokens(tokens)))
 		}
 	}
 
 	md.WriteString("\n\n")
 
-	// Process parts
 	g.writeParts(md, parts)
 
 	md.WriteString("---\n\n")
 }
 
-func (g *Generator) writeParts(md *strings.Builder, parts []session.MessagePart) {
-	var textParts []session.MessagePart
-	var toolParts []session.MessagePart
-	var fileParts []session.MessagePart
-	var otherParts []session.MessagePart
+func (g *Generator) writeParts(md *strings.Builder, parts []*session.MessagePart) {
+	var textParts, reasoningParts, toolParts, fileParts, otherParts []*session.MessagePart
 
-	// Group parts by type
-	for _, part := range parts {
-		switch part.Type {
+	for i := range parts {
+		part := parts[i]
+		switch part.Type() {
 		case "text":
 			textParts = append(textParts, part)
+		case "reasoning":
+			reasoningParts = append(reasoningParts, part)
 		case "tool":
 			toolParts = append(toolParts, part)
 		case "file":
 			fileParts = append(fileParts, part)
 		case "step-start", "step-finish":
-			// Skip step metadata parts - these are internal processing markers
 			continue
 		default:
 			otherParts = append(otherParts, part)
 		}
 	}
 
-	// Write text parts first
 	for _, part := range textParts {
 		g.writeTextPart(md, part)
 	}
 
-	// Write file attachments
+	for _, part := range reasoningParts {
+		g.writeReasoningPart(md, part)
+	}
+
 	if len(fileParts) > 0 {
 		md.WriteString("### Attachments\n\n")
 		for _, part := range fileParts {
@@ -135,7 +200,6 @@ func (g *Generator) writeParts(md *strings.Builder, parts []session.MessagePart)
 		md.WriteString("\n")
 	}
 
-	// Write tool executions
 	if len(toolParts) > 0 {
 		md.WriteString("### Tool Executions\n\n")
 		for _, part := range toolParts {
@@ -143,22 +207,22 @@ func (g *Generator) writeParts(md *strings.Builder, parts []session.MessagePart)
 		}
 	}
 
-	// Write other parts
 	for _, part := range otherParts {
 		g.writeOtherPart(md, part)
 	}
 }
 
-func (g *Generator) writeTextPart(md *strings.Builder, part session.MessagePart) {
-	// For text parts, the text is directly in the Text field
-	if part.Text != nil {
-		md.WriteString(*part.Text)
+func (g *Generator) writeTextPart(md *strings.Builder, part *session.MessagePart) {
+	text := part.Text()
+	if text != "" {
+		md.WriteString(text)
 		md.WriteString("\n\n")
 		return
 	}
 
-	// Fallback: try to parse from Data field
-	var textData session.TextPartData
+	var textData struct {
+		Text string `json:"text"`
+	}
 	if err := json.Unmarshal(part.Data, &textData); err != nil {
 		md.WriteString(fmt.Sprintf("*[Error parsing text part: %v]*\n\n", err))
 		return
@@ -168,157 +232,115 @@ func (g *Generator) writeTextPart(md *strings.Builder, part session.MessagePart)
 	md.WriteString("\n\n")
 }
 
-func (g *Generator) writeToolPart(md *strings.Builder, part session.MessagePart) {
-	// For tool parts, the data is directly in the part fields
-	if part.Tool != nil && part.State != nil {
-		g.writeToolPartDirect(md, part)
+func (g *Generator) writeReasoningPart(md *strings.Builder, part *session.MessagePart) {
+	text := part.Text()
+	if text == "" {
+		var textData struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(part.Data, &textData); err == nil {
+			text = textData.Text
+		}
+	}
+
+	if text == "" {
+		md.WriteString("*[Error: empty reasoning part]*\n\n")
 		return
 	}
 
-	// Fallback: try to parse from Data field
-	var toolData session.ToolPartData
-	if err := json.Unmarshal(part.Data, &toolData); err != nil {
-		md.WriteString(fmt.Sprintf("*[Error parsing tool part: %v]*\n\n", err))
-		return
-	}
-
-	g.writeToolPartFromData(md, toolData)
+	md.WriteString("<details>\n")
+	md.WriteString("<summary>💭 Thinking</summary>\n\n")
+	md.WriteString(text)
+	md.WriteString("\n\n</details>\n\n")
 }
 
-func (g *Generator) writeToolPartDirect(md *strings.Builder, part session.MessagePart) {
-	var state session.ToolStateData
-	if err := json.Unmarshal(part.State, &state); err != nil {
+func (g *Generator) writeToolPart(md *strings.Builder, part *session.MessagePart) {
+	tool := part.Tool()
+	stateJSON := part.State()
+
+	if tool != "" && len(stateJSON) > 0 {
+		g.writeToolPartFromState(md, tool, stateJSON)
+		return
+	}
+
+	md.WriteString(fmt.Sprintf("*[Error: tool part missing data for part %s]*\n\n", part.ID))
+}
+
+func (g *Generator) writeToolPartFromState(md *strings.Builder, toolName string, stateJSON json.RawMessage) {
+	var state session.ToolState
+	if err := json.Unmarshal(stateJSON, &state); err != nil {
 		md.WriteString(fmt.Sprintf("*[Error parsing tool state: %v]*\n\n", err))
 		return
 	}
 
-	// Tool header with status
 	statusIcon := g.getStatusIcon(state.Status)
-	toolName := *part.Tool
 	md.WriteString(fmt.Sprintf("#### %s %s", statusIcon, toolName))
 
-	if state.Title != nil {
-		md.WriteString(fmt.Sprintf(" - \"%s\"", *state.Title))
+	if state.Title != "" {
+		md.WriteString(fmt.Sprintf(" - \"%s\"", state.Title))
 	}
 
 	md.WriteString("\n")
-
-	// Status and timing
 	md.WriteString(fmt.Sprintf("**Status:** %s %s", statusIcon, strings.Title(state.Status)))
 
-	if g.includeTimings && state.Time != nil {
-		start := time.UnixMilli(state.Time.Start)
-		end := time.UnixMilli(state.Time.End)
+	if g.includeTimings && state.TimeStart > 0 && state.TimeEnd > 0 {
+		start := time.UnixMilli(state.TimeStart)
+		end := time.UnixMilli(state.TimeEnd)
 		duration := end.Sub(start)
 		md.WriteString(fmt.Sprintf(" | **Duration:** %s", g.formatDuration(duration)))
 	}
 
 	md.WriteString("\n\n")
 
-	// Tool input
-	if state.Input != nil {
+	if len(state.Input) > 0 {
 		md.WriteString("**Input:**\n")
 		g.writeCodeBlock(md, state.Input, toolName)
 		md.WriteString("\n")
 	}
 
-	// Tool output
-	if state.Output != nil {
+	if len(state.Output) > 0 {
 		md.WriteString("**Output:**\n")
-		if outputStr, ok := state.Output.(string); ok {
-			md.WriteString("```\n")
-			md.WriteString(outputStr)
-			md.WriteString("\n```\n\n")
-		} else {
-			// Try to marshal as JSON
-			if outputJSON, err := json.MarshalIndent(state.Output, "", "  "); err == nil {
-				md.WriteString("```json\n")
-				md.WriteString(string(outputJSON))
-				md.WriteString("\n```\n\n")
-			} else {
-				md.WriteString("```\n")
-				md.WriteString(fmt.Sprintf("%v", state.Output))
-				md.WriteString("\n```\n\n")
-			}
-		}
+		g.writeJSONOutput(md, state.Output)
 	}
 }
 
-func (g *Generator) writeToolPartFromData(md *strings.Builder, toolData session.ToolPartData) {
-	// Tool header with status
-	statusIcon := g.getStatusIcon(toolData.State.Status)
-	md.WriteString(fmt.Sprintf("#### %s %s", statusIcon, toolData.Tool))
-
-	if toolData.State.Title != nil {
-		md.WriteString(fmt.Sprintf(" - \"%s\"", *toolData.State.Title))
-	}
-
-	md.WriteString("\n")
-
-	// Status and timing
-	md.WriteString(fmt.Sprintf("**Status:** %s %s", statusIcon, strings.Title(toolData.State.Status)))
-
-	if g.includeTimings && toolData.State.Time != nil {
-		start := time.UnixMilli(toolData.State.Time.Start)
-		end := time.UnixMilli(toolData.State.Time.End)
-		duration := end.Sub(start)
-		md.WriteString(fmt.Sprintf(" | **Duration:** %s", g.formatDuration(duration)))
-	}
-
-	md.WriteString("\n\n")
-
-	// Tool input
-	if toolData.State.Input != nil {
-		md.WriteString("**Input:**\n")
-		g.writeCodeBlock(md, toolData.State.Input, toolData.Tool)
-		md.WriteString("\n")
-	}
-
-	// Tool output
-	if toolData.State.Output != nil {
-		md.WriteString("**Output:**\n")
-		if outputStr, ok := toolData.State.Output.(string); ok {
-			md.WriteString("```\n")
-			md.WriteString(outputStr)
+func (g *Generator) writeJSONOutput(md *strings.Builder, data json.RawMessage) {
+	var prettyData interface{}
+	if err := json.Unmarshal(data, &prettyData); err == nil {
+		if prettyJSON, err := json.MarshalIndent(prettyData, "", "  "); err == nil {
+			md.WriteString("```json\n")
+			md.WriteString(string(prettyJSON))
 			md.WriteString("\n```\n\n")
-		} else {
-			// Try to marshal as JSON
-			if outputJSON, err := json.MarshalIndent(toolData.State.Output, "", "  "); err == nil {
-				md.WriteString("```json\n")
-				md.WriteString(string(outputJSON))
-				md.WriteString("\n```\n\n")
-			} else {
-				md.WriteString("```\n")
-				md.WriteString(fmt.Sprintf("%v", toolData.State.Output))
-				md.WriteString("\n```\n\n")
-			}
+			return
 		}
+	}
+	var strData string
+	if err := json.Unmarshal(data, &strData); err == nil {
+		md.WriteString("```\n")
+		md.WriteString(strData)
+		md.WriteString("\n```\n\n")
+	} else {
+		md.WriteString("```\n")
+		md.WriteString(string(data))
+		md.WriteString("\n```\n\n")
 	}
 }
 
-func (g *Generator) writeFilePart(md *strings.Builder, part session.MessagePart) {
+func (g *Generator) writeFilePart(md *strings.Builder, part *session.MessagePart) {
 	var fileData session.FilePartData
 	if err := json.Unmarshal(part.Data, &fileData); err != nil {
 		md.WriteString(fmt.Sprintf("*[Error parsing file part: %v]*\n", err))
 		return
 	}
 
-	icon := g.getFileIcon(fileData.MimeType)
-	md.WriteString(fmt.Sprintf("- %s `%s`", icon, fileData.Name))
-
-	if fileData.Size != nil {
-		md.WriteString(fmt.Sprintf(" (%s)", g.formatFileSize(*fileData.Size)))
-	}
-
-	md.WriteString(fmt.Sprintf(" (%s)", fileData.MimeType))
-	md.WriteString("\n")
+	icon := g.getFileIcon(fileData.Mime)
+	md.WriteString(fmt.Sprintf("- %s `%s` (%s)\n", icon, fileData.Filename, fileData.Mime))
 }
 
-func (g *Generator) writeOtherPart(md *strings.Builder, part session.MessagePart) {
-	md.WriteString(fmt.Sprintf("### %s Part\n\n", strings.Title(part.Type)))
+func (g *Generator) writeOtherPart(md *strings.Builder, part *session.MessagePart) {
+	md.WriteString(fmt.Sprintf("### %s Part\n\n", strings.Title(part.Type())))
 	md.WriteString("```json\n")
 
-	// Pretty print the JSON data
 	var prettyData interface{}
 	if err := json.Unmarshal(part.Data, &prettyData); err == nil {
 		if prettyJSON, err := json.MarshalIndent(prettyData, "", "  "); err == nil {
@@ -333,13 +355,62 @@ func (g *Generator) writeOtherPart(md *strings.Builder, part session.MessagePart
 	md.WriteString("\n```\n\n")
 }
 
-func (g *Generator) writeCodeBlock(md *strings.Builder, data json.RawMessage, toolName string) {
-	// Try to determine language from tool name
-	lang := g.getLanguageFromTool(toolName)
+func (g *Generator) writeSystemEvents(md *strings.Builder, events []session.SystemEvent) {
+	md.WriteString("## System Events\n\n")
+	md.WriteString("| Time | Event | Details |\n")
+	md.WriteString("|------|-------|---------|\n")
 
+	for i := range events {
+		g.writeSystemEventRow(md, &events[i])
+	}
+
+	md.WriteString("\n")
+}
+
+func (g *Generator) writeSystemEventRow(md *strings.Builder, event *session.SystemEvent) {
+	timestamp := event.GetCreatedAt().Format("15:04:05")
+	var details string
+
+	switch event.Type {
+	case "model-switched":
+		var data struct {
+			ModelID    string `json:"modelID"`
+			ProviderID string `json:"providerID"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err == nil {
+			details = fmt.Sprintf("%s/%s", data.ProviderID, data.ModelID)
+		} else {
+			details = "unknown model"
+		}
+	case "agent-switched":
+		var data struct {
+			Agent string `json:"agent"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err == nil {
+			details = data.Agent
+		} else {
+			details = "unknown agent"
+		}
+	default:
+		var raw interface{}
+		if err := json.Unmarshal(event.Data, &raw); err == nil {
+			if b, err := json.Marshal(raw); err == nil {
+				details = string(b)
+			} else {
+				details = string(event.Data)
+			}
+		} else {
+			details = string(event.Data)
+		}
+	}
+
+	md.WriteString(fmt.Sprintf("| %s | %s | %s |\n", timestamp, event.Type, details))
+}
+
+func (g *Generator) writeCodeBlock(md *strings.Builder, data json.RawMessage, toolName string) {
+	lang := g.getLanguageFromTool(toolName)
 	md.WriteString(fmt.Sprintf("```%s\n", lang))
 
-	// Try to pretty print if it's JSON
 	if lang == "json" {
 		var prettyData interface{}
 		if err := json.Unmarshal(data, &prettyData); err == nil {
@@ -352,7 +423,6 @@ func (g *Generator) writeCodeBlock(md *strings.Builder, data json.RawMessage, to
 			md.WriteString(string(data))
 		}
 	} else {
-		// For non-JSON, try to extract string content
 		var strData string
 		if err := json.Unmarshal(data, &strData); err == nil {
 			md.WriteString(strData)
@@ -364,9 +434,10 @@ func (g *Generator) writeCodeBlock(md *strings.Builder, data json.RawMessage, to
 	md.WriteString("\n```")
 }
 
-func (g *Generator) groupPartsByMessage(parts []session.MessagePart) map[string][]session.MessagePart {
-	result := make(map[string][]session.MessagePart)
-	for _, part := range parts {
+func (g *Generator) groupPartsByMessage(parts []session.MessagePart) map[string][]*session.MessagePart {
+	result := make(map[string][]*session.MessagePart)
+	for i := range parts {
+		part := &parts[i]
 		result[part.MessageID] = append(result[part.MessageID], part)
 	}
 	return result
@@ -406,10 +477,6 @@ func (g *Generator) getLanguageFromTool(toolName string) string {
 	switch toolName {
 	case "bash", "shell":
 		return "bash"
-	case "read", "write", "edit":
-		return ""
-	case "grep", "glob":
-		return ""
 	default:
 		return ""
 	}
@@ -423,17 +490,4 @@ func (g *Generator) formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%.1fm", d.Minutes())
 	}
 	return fmt.Sprintf("%.1fh", d.Hours())
-}
-
-func (g *Generator) formatFileSize(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
-	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
